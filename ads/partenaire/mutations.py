@@ -7,6 +7,7 @@ from .schema import (
 )
 import os
 from django.contrib.auth.hashers import check_password
+from django.core.files.storage import default_storage
 
 # LOGIN
 class LoginUtilisateur(graphene.Mutation):
@@ -104,49 +105,32 @@ class UploadImage(graphene.Mutation):
         file = Upload(required=True)
         description = graphene.String()
         id_utilisateur_partenaire = graphene.Int()
+        id_campaign = graphene.Int()
 
     image_obj = graphene.Field(ImageType)
     ok = graphene.Boolean()
     message = graphene.String()
 
-    def mutate(self, info, file, description=None, id_utilisateur_partenaire=None):
+    def mutate(self, info, file, description=None, id_utilisateur_partenaire=None, id_campaign=None):
         try:
             image_obj = Image.objects.create(
                 image=file,
                 description=description,
                 id_utilisateur_partenaire_id=id_utilisateur_partenaire
             )
+            # Si une campagne est précisée, rattacher l'image à la campagne
+            if id_campaign:
+                campaign = Campaign.objects.get(pk=id_campaign)
+                CampaignImage.objects.create(id_campaign=campaign, id_image=image_obj)
+                # Compter le nombre d'images rattachées à cette campagne
+                nb_images = CampaignImage.objects.filter(id_campaign=campaign).count()
+                # Si la campagne était en 'upload' et a au moins 3 images, passer à 'pending'
+                if campaign.status == 'upload' and nb_images >= 3:
+                    campaign.status = 'pending'
+                    campaign.save()
             return UploadImage(image_obj=image_obj, ok=True, message="Image uploadée avec succès")
         except Exception as e:
             return UploadImage(image_obj=None, ok=False, message=f"Erreur upload: {e}")
-        
-class UpdateImage(graphene.Mutation):
-    class Arguments:
-        id = graphene.Int(required=True)
-        image = graphene.String()
-        description = graphene.String()
-    image_obj = graphene.Field(ImageType)
-    def mutate(self, info, id, image=None, description=None):
-        try:
-            image_obj = Image.objects.get(pk=id)
-            if image:
-                image_obj.image = os.path.join('media', image)
-            if description is not None:
-                image_obj.description = description
-            image_obj.save()
-            return UpdateImage(image_obj=image_obj)
-        except Image.DoesNotExist:
-            return None
-class DeleteImage(graphene.Mutation):
-    class Arguments:
-        id = graphene.Int(required=True)
-    ok = graphene.Boolean()
-    def mutate(self, info, id):
-        try:
-            Image.objects.get(pk=id).delete()
-            return DeleteImage(ok=True)
-        except Image.DoesNotExist:
-            return DeleteImage(ok=False)
 
 # --- Display ---
 class CreateDisplay(graphene.Mutation):
@@ -204,10 +188,17 @@ class CreateCampaign(graphene.Mutation):
         description = graphene.String()
         id_utilisateur_createur = graphene.Int()
         id_image = graphene.Int()
+        id_displays = graphene.List(graphene.Int, required=False)
     campaign = graphene.Field(CampaignType)
-    def mutate(self, info, **kwargs):
+    def mutate(self, info, id_displays=None, **kwargs):
         campaign = Campaign.objects.create(**kwargs)
+        # Rattacher les displays sélectionnés à la campagne
+        if id_displays:
+            for display_id in id_displays:
+                display = Display.objects.get(pk=display_id)
+                CampaignDisplay.objects.create(id_campaign=campaign, id_display=display)
         return CreateCampaign(campaign=campaign)
+    
 class UpdateCampaign(graphene.Mutation):
     class Arguments:
         id = graphene.Int(required=True)
@@ -221,8 +212,25 @@ class UpdateCampaign(graphene.Mutation):
         id_image = graphene.Int()
     campaign = graphene.Field(CampaignType)
     def mutate(self, info, id, **kwargs):
+        from datetime import date
         try:
             campaign = Campaign.objects.get(pk=id)
+            status = kwargs.get('status', None)
+            # Si le commercial annule (status 'cancelled'), repasser à 'upload' et supprimer les images rattachées
+            if status == 'cancelled':
+                campaign_images = CampaignImage.objects.filter(id_campaign=campaign)
+                for ci in campaign_images:
+                    if ci.id_image and ci.id_image.image:
+                        ci.id_image.image.delete(save=False)
+                        ci.id_image.delete()
+                    ci.delete()
+                kwargs['status'] = 'upload'
+            # Si le commercial valide, passer à 'submitted'
+            elif status == 'submitted':
+                kwargs['status'] = 'submitted'
+            # Si la campagne est soumise et la date de fin est passée, passer à 'completed'
+            elif campaign.status == 'submitted' and campaign.end_date and campaign.end_date <= date.today():
+                kwargs['status'] = 'completed'
             for k, v in kwargs.items():
                 if v is not None:
                     setattr(campaign, k, v)
@@ -241,53 +249,6 @@ class DeleteCampaign(graphene.Mutation):
         except Campaign.DoesNotExist:
             return DeleteCampaign(ok=False)
 
-# --- CampaignDisplay ---
-class CreateCampaignDisplay(graphene.Mutation):
-    class Arguments:
-        id_campaign = graphene.Int(required=True)
-        id_display = graphene.Int(required=True)
-        date_debut_affichage = graphene.types.datetime.Date()
-        date_fin_affichage = graphene.types.datetime.Date()
-        nombre_affichages = graphene.Int()
-    campaign_display = graphene.Field(CampaignDisplayType)
-    def mutate(self, info, id_campaign, id_display, date_debut_affichage=None, date_fin_affichage=None, nombre_affichages=0):
-        campaign_display = CampaignDisplay.objects.create(
-            id_campaign_id=id_campaign,
-            id_display_id=id_display,
-            date_debut_affichage=date_debut_affichage,
-            date_fin_affichage=date_fin_affichage,
-            nombre_affichages=nombre_affichages
-        )
-        return CreateCampaignDisplay(campaign_display=campaign_display)
-class UpdateCampaignDisplay(graphene.Mutation):
-    class Arguments:
-        id = graphene.Int(required=True)
-        id_campaign = graphene.Int()
-        id_display = graphene.Int()
-        date_debut_affichage = graphene.types.datetime.Date()
-        date_fin_affichage = graphene.types.datetime.Date()
-        nombre_affichages = graphene.Int()
-    campaign_display = graphene.Field(CampaignDisplayType)
-    def mutate(self, info, id, **kwargs):
-        try:
-            campaign_display = CampaignDisplay.objects.get(pk=id)
-            for k, v in kwargs.items():
-                if v is not None:
-                    setattr(campaign_display, k, v)
-            campaign_display.save()
-            return UpdateCampaignDisplay(campaign_display=campaign_display)
-        except CampaignDisplay.DoesNotExist:
-            return None
-class DeleteCampaignDisplay(graphene.Mutation):
-    class Arguments:
-        id = graphene.Int(required=True)
-    ok = graphene.Boolean()
-    def mutate(self, info, id):
-        try:
-            CampaignDisplay.objects.get(pk=id).delete()
-            return DeleteCampaignDisplay(ok=True)
-        except CampaignDisplay.DoesNotExist:
-            return DeleteCampaignDisplay(ok=False)
 
 # --- Revenue ---
 class CreateRevenue(graphene.Mutation):
@@ -343,48 +304,6 @@ class DeleteRevenue(graphene.Mutation):
         except Revenue.DoesNotExist:
             return DeleteRevenue(ok=False)
 
-# --- CampaignImage ---
-class CreateCampaignImage(graphene.Mutation):
-    class Arguments:
-        id_campaign = graphene.Int(required=True)
-        id_image = graphene.Int(required=True)
-        ordre_affichage = graphene.Int()
-    campaign_image = graphene.Field(CampaignImageType)
-    def mutate(self, info, id_campaign, id_image, ordre_affichage=1):
-        campaign_image = CampaignImage.objects.create(
-            id_campaign_id=id_campaign,
-            id_image_id=id_image,
-            ordre_affichage=ordre_affichage
-        )
-        return CreateCampaignImage(campaign_image=campaign_image)
-class UpdateCampaignImage(graphene.Mutation):
-    class Arguments:
-        id = graphene.Int(required=True)
-        id_campaign = graphene.Int()
-        id_image = graphene.Int()
-        ordre_affichage = graphene.Int()
-    campaign_image = graphene.Field(CampaignImageType)
-    def mutate(self, info, id, **kwargs):
-        try:
-            campaign_image = CampaignImage.objects.get(pk=id)
-            for k, v in kwargs.items():
-                if v is not None:
-                    setattr(campaign_image, k, v)
-            campaign_image.save()
-            return UpdateCampaignImage(campaign_image=campaign_image)
-        except CampaignImage.DoesNotExist:
-            return None
-class DeleteCampaignImage(graphene.Mutation):
-    class Arguments:
-        id = graphene.Int(required=True)
-    ok = graphene.Boolean()
-    def mutate(self, info, id):
-        try:
-            CampaignImage.objects.get(pk=id).delete()
-            return DeleteCampaignImage(ok=True)
-        except CampaignImage.DoesNotExist:
-            return DeleteCampaignImage(ok=False)
-
 class Mutation(graphene.ObjectType):
     # Utilisateur
     create_utilisateur = CreateUtilisateur.Field()
@@ -393,8 +312,6 @@ class Mutation(graphene.ObjectType):
     login_utilisateur = LoginUtilisateur.Field()
 
     # Image
-    update_image = UpdateImage.Field()
-    delete_image = DeleteImage.Field()
     upload_image = UploadImage.Field()
 
     # Display
@@ -407,17 +324,7 @@ class Mutation(graphene.ObjectType):
     update_campaign = UpdateCampaign.Field()
     delete_campaign = DeleteCampaign.Field()
 
-    # CampaignDisplay
-    create_campaign_display = CreateCampaignDisplay.Field()
-    update_campaign_display = UpdateCampaignDisplay.Field()
-    delete_campaign_display = DeleteCampaignDisplay.Field()
-
     # Revenue
     create_revenue = CreateRevenue.Field()
     update_revenue = UpdateRevenue.Field()
     delete_revenue = DeleteRevenue.Field()
-    
-    # CampaignImage
-    create_campaign_image = CreateCampaignImage.Field()
-    update_campaign_image = UpdateCampaignImage.Field()
-    delete_campaign_image = DeleteCampaignImage.Field()
