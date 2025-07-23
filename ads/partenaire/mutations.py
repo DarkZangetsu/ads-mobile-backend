@@ -1,4 +1,4 @@
-
+from graphene_file_upload.scalars import Upload
 import graphene
 from .models import Utilisateur, Image, Display, Campaign, CampaignDisplay, Revenue, CampaignImage
 from .schema import (
@@ -98,20 +98,28 @@ class DeleteUtilisateur(graphene.Mutation):
             return DeleteUtilisateur(ok=False)
 
 # --- Image ---
-class CreateImage(graphene.Mutation):
+# Mutation pour upload d'image via multipart/form-data
+class UploadImage(graphene.Mutation):
     class Arguments:
-        image = graphene.String(required=True)
+        file = Upload(required=True)
         description = graphene.String()
         id_utilisateur_partenaire = graphene.Int()
+
     image_obj = graphene.Field(ImageType)
-    def mutate(self, info, image, description=None, id_utilisateur_partenaire=None):
-        image_path = os.path.join('media', image)
-        image_obj = Image.objects.create(
-            image=image_path,
-            description=description,
-            id_utilisateur_partenaire_id=id_utilisateur_partenaire
-        )
-        return CreateImage(image_obj=image_obj)
+    ok = graphene.Boolean()
+    message = graphene.String()
+
+    def mutate(self, info, file, description=None, id_utilisateur_partenaire=None):
+        try:
+            image_obj = Image.objects.create(
+                image=file,
+                description=description,
+                id_utilisateur_partenaire_id=id_utilisateur_partenaire
+            )
+            return UploadImage(image_obj=image_obj, ok=True, message="Image uploadée avec succès")
+        except Exception as e:
+            return UploadImage(image_obj=None, ok=False, message=f"Erreur upload: {e}")
+        
 class UpdateImage(graphene.Mutation):
     class Arguments:
         id = graphene.Int(required=True)
@@ -383,26 +391,32 @@ class Mutation(graphene.ObjectType):
     update_utilisateur = UpdateUtilisateur.Field()
     delete_utilisateur = DeleteUtilisateur.Field()
     login_utilisateur = LoginUtilisateur.Field()
+
     # Image
-    create_image = CreateImage.Field()
     update_image = UpdateImage.Field()
     delete_image = DeleteImage.Field()
+    upload_image = UploadImage.Field()
+
     # Display
     create_display = CreateDisplay.Field()
     update_display = UpdateDisplay.Field()
     delete_display = DeleteDisplay.Field()
+
     # Campaign
     create_campaign = CreateCampaign.Field()
     update_campaign = UpdateCampaign.Field()
     delete_campaign = DeleteCampaign.Field()
+
     # CampaignDisplay
     create_campaign_display = CreateCampaignDisplay.Field()
     update_campaign_display = UpdateCampaignDisplay.Field()
     delete_campaign_display = DeleteCampaignDisplay.Field()
+
     # Revenue
     create_revenue = CreateRevenue.Field()
     update_revenue = UpdateRevenue.Field()
     delete_revenue = DeleteRevenue.Field()
+    
     # CampaignImage
     create_campaign_image = CreateCampaignImage.Field()
     update_campaign_image = UpdateCampaignImage.Field()

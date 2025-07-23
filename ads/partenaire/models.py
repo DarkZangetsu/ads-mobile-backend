@@ -41,7 +41,7 @@ class Utilisateur(models.Model):
         ]
 
 class Image(models.Model):
-    image = models.TextField()
+    image = models.ImageField(upload_to='campaign_images/')
     description = models.TextField(blank=True, null=True)
     id_utilisateur_partenaire = models.ForeignKey(Utilisateur, on_delete=models.CASCADE, related_name='images', blank=True, null=True)
     date_upload = models.DateTimeField(auto_now_add=True)
